@@ -14,20 +14,25 @@ import torch.utils
 import torchvision.datasets as dset
 import torch.backends.cudnn as cudnn
 import scipy.io as sio
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
 from torch.autograd import Variable
 from model import NetworkHSI as Network
 from sklearn.metrics import confusion_matrix
 from utils import cutout
+from sklearn.metrics import confusion_matrix, accuracy_score, classification_report, cohen_kappa_score
 
 
 parser = argparse.ArgumentParser("HSI")
-parser.add_argument('--num_class', type=int, default=16, help='classes of HSI dataset')
+parser.add_argument('--num_class', type=int, default=13, help='classes of HSI dataset')
 parser.add_argument('--batch_size', type=int, default=32, help='batch size')
 parser.add_argument('--learning_rate', type=float, default=0.016, help='init learning rate')
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
 parser.add_argument('--weight_decay', type=float, default=3e-4, help='weight decay')
 parser.add_argument('--gpu', type=int, default=0, help='gpu device id')
-parser.add_argument('--epochs', type=int, default=100, help='num of training epochs')
+parser.add_argument('--epochs', type=int, default=150, help='num of training epochs')
 parser.add_argument('--init_channels', type=int, default=16, help='num of init channels')
 parser.add_argument('--layers', type=int, default=3, help='total number of layers')
 parser.add_argument('--auxiliary', action='store_true', default=False, help='use auxiliary tower')
@@ -38,8 +43,8 @@ parser.add_argument('--drop_path_prob', type=float, default=0.2, help='drop path
 parser.add_argument('--arch', type=str, default='HSI', help='which architecture to use')
 parser.add_argument('--grad_clip', type=float, default=5, help='gradient clipping')
 parser.add_argument('--num_cut', type=int, default=10, help='band cutout')
-parser.add_argument('--Train', type=int, default=200, help='Train_num')
-parser.add_argument('--Valid', type=int, default=100, help='Valid_num')
+parser.add_argument('--Train', type=int, default=500, help='Train_num')
+parser.add_argument('--Valid', type=int, default=300, help='Valid_num')
 args = parser.parse_args()
 args.cuda = torch.cuda.is_available()
 args.manualSeed = random.randint(1, 10000)
@@ -48,24 +53,23 @@ args.manualSeed = random.randint(1, 10000)
 log_format = '%(asctime)s %(message)s'
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
     format=log_format, datefmt='%m/%d %I:%M:%S %p')
-fh = logging.FileHandler('./result/log_test.txt')
+fh = logging.FileHandler('./result/log.txt')
 fh.setFormatter(logging.Formatter(log_format))
 logging.getLogger().addHandler(fh)
 
 # read data
-# read data
-image_file = '/content/Indian_pines_corrected.mat'
-label_file = '/content/Indian_pines_gt.mat'
+image_file = '/content/KSC.mat'
+label_file = '/content/KSC_gt.mat'
 
 image = sio.loadmat(image_file)
-IndianPines = image['indian_pines_corrected']
+KSC = image['KSC']
 
 label = sio.loadmat(label_file)
-GroundTruth = label['indian_pines_gt']
+GroundTruth = label['KSC_gt']
 
-IndianPines = (IndianPines - np.min(IndianPines)) / (np.max(IndianPines) - np.min(IndianPines))
+KSC = (KSC - np.min(KSC)) / (np.max(KSC) - np.min(KSC))
 
-[nRow, nColumn, nBand] = IndianPines.shape
+[nRow, nColumn, nBand] = KSC.shape
 
 num_class = int(np.max(GroundTruth))
 
@@ -138,7 +142,7 @@ def main(genotype, seed, cut):
 
     for iSample in range(nTrain):
 
-        yy = IndianPines[Row[RandPerm[iSample]] - HalfWidth: Row[RandPerm[iSample]] + HalfWidth, \
+        yy = KSC[Row[RandPerm[iSample]] - HalfWidth: Row[RandPerm[iSample]] + HalfWidth, \
                   Column[RandPerm[iSample]] - HalfWidth: Column[RandPerm[iSample]] + HalfWidth, :]
         if args.cutout:
             xx = cutout(yy, args.cutout_length, args.num_cut)
@@ -150,13 +154,14 @@ def main(genotype, seed, cut):
         imdb['Labels'][iSample] = G[Row[RandPerm[iSample]], Column[RandPerm[iSample]]].astype(np.int64)
 
     for iSample in range(nValidate):
-        imdb['data'][:, :, :, iSample + nTrain] = IndianPines[Row[RandPerm[iSample + nTrain]] - HalfWidth: Row[RandPerm[
+        imdb['data'][:, :, :, iSample + nTrain] = KSC[Row[RandPerm[iSample + nTrain]] - HalfWidth: Row[RandPerm[
             iSample + nTrain]] + HalfWidth, \
                                                   Column[RandPerm[iSample + nTrain]] - HalfWidth: Column[RandPerm[
                                                       iSample + nTrain]] + HalfWidth, :]
         imdb['Labels'][iSample + nTrain] = G[Row[RandPerm[iSample + nTrain]],
                                              Column[RandPerm[iSample + nTrain]]].astype(np.int64)
     imdb['Labels'] = imdb['Labels'] - 1
+
     Xtrain=imdb['data'][:,:,:,:nTrain]
     ytrain=imdb['Labels'][:nTrain]
     print('Xtrain :',Xtrain.shape)
@@ -200,24 +205,16 @@ def main(genotype, seed, cut):
     #trainloader testloader
     trainset = TrainDS()
     testset  = TestDS()
-    train_queue = torch.utils.data.DataLoader(dataset=trainset, batch_size=200, shuffle=True, num_workers=0)
-    valid_queue  = torch.utils.data.DataLoader(dataset=testset,  batch_size=200, shuffle=False, num_workers=0)
+    train_queue = torch.utils.data.DataLoader(dataset=trainset, batch_size=128, shuffle=True, num_workers=0)
+    valid_queue  = torch.utils.data.DataLoader(dataset=testset,  batch_size=128, shuffle=True, num_workers=0)
 
-    # train_dataset = dset.matcifar(imdb, train=True, d=3, medicinal=0)
-    # valid_dataset = dset.matcifar(imdb, train=False, d=3, medicinal=0)
-
-    # train_queue = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size,
-    #                                           shuffle=True, num_workers=0)
-
-    # valid_queue = torch.utils.data.DataLoader(valid_dataset, batch_size=args.batch_size,
-    #                                           shuffle=False, num_workers=0)
-
+    tic = time.time()
     train_acc, train_obj, tar, pre = train(train_queue, model, criterion, optimizer)
 
     # validation
     valid_acc, valid_obj, tar_v, pre_v = infer(valid_queue, model, criterion)
-
-    logging.info('Epoch: %03d train_loss: %f train_acc: %f valid_loss: %f valid_acc: %f' %(epoch, train_obj, train_acc, valid_obj, valid_acc))
+    toc = time.time()
+    logging.info('Epoch: %03d train_loss: %f train_acc: %f valid_loss: %f valid_acc: %f time = %f' %(epoch, train_obj, train_acc, valid_obj, valid_acc,toc - tic))
 
     if epoch > args.epochs * 0.8 and valid_obj < min_val_obj:
         min_val_obj = valid_obj
@@ -233,7 +230,7 @@ def main(genotype, seed, cut):
             imdb['set'] = 3* np.ones([batchva], dtype=np.int64)
 
             for iSample in range(batchva):
-                imdb['data'][:, :, :, iSample] = IndianPines[Row[RandPerm[iSample + total + i * batchva]] - HalfWidth: Row[RandPerm[
+                imdb['data'][:, :, :, iSample] = KSC[Row[RandPerm[iSample + total + i * batchva]] - HalfWidth: Row[RandPerm[
                     iSample +total+ i * batchva]] + HalfWidth, \
                                                  Column[RandPerm[iSample + total + i * batchva]] - HalfWidth: Column[RandPerm[
                                                      iSample +total+ i * batchva]] + HalfWidth, :]
@@ -255,17 +252,33 @@ def main(genotype, seed, cut):
         OA_V = sum(map(lambda x, y: 1 if x == y else 0, predict, labels)) / (numbatch2*batchva)
         C1 = confusion_matrix(labels, predict)
 
+
+        # # Create a figure and axis
+        # fig, ax = plt.subplots(figsize=(8, 6))
+
+        # # Create a heatmap using seaborn
+        # heatmap = sns.heatmap(C1, annot=True, cmap='Blues', fmt=".2f", xticklabels=class_labels, yticklabels=class_labels, ax=ax)
+
+        # # Set axis labels and title
+        # ax.set_xlabel('Predicted')
+        # ax.set_ylabel('True')
+        # ax.set_title('Classification Heatmap')
+
+        # plt.savefig('/content/result/heatmap_NasNET.png', dpi=300)
+
         logging.info('test_loss= %f'%(OA_V))
-        logging.info('test_accuracy= %f'%(100-OA_V))
+        logging.info('test_accuracy= %f'%(valid_acc))
         print("=========================================================")
         print('Test loss=',OA_V)
-        print('Test accuracy=',100-OA_V)
+        print('Test accuracy=',valid_acc)
         print("=========================================================")
-        print("Confusion matrix")
-        print(C1)
+        # print("Confusion matrix")
+        # print(C1)
+        # print(summary(model, (200,200,32)))
+        print("each class accuracy")
+        print(classification_report(predict,labels,digits=4))
         print("=========================================================")
         return C1
-
 
 def train(train_queue, model, criterion, optimizer):
 
@@ -327,7 +340,7 @@ def cal_results(matrix):
     shape = np.shape(matrix)
     number = 0
     sum = 0
-    AA = np.zeros([shape[0]], dtype=float)
+    AA = np.zeros([shape[0]], dtype=np.float)
     for i in range(shape[0]):
         number += matrix[i, i]
         AA[i] = matrix[i, i] / np.sum(matrix[i, :])
@@ -342,6 +355,7 @@ if __name__ == '__main__':
 
   genotype = eval('genotypes.{}'.format(args.arch))
   matrix = main(genotype=genotype, seed=np.random.randint(low=0, high=10000, size=1), cut=False)
+
   print("\nSearched Architecture")
   print(genotype)
 
@@ -352,3 +366,4 @@ if __name__ == '__main__':
   print("Overall accuracy: ",OA)
   print("Mean accuracy: ",AA_mean)
   print("Kappa: ",Kappa)
+

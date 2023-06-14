@@ -5,6 +5,7 @@ import time
 import glob
 import numpy as np
 import torch
+import math
 import utils
 import logging
 import argparse
@@ -16,6 +17,13 @@ import torchvision.datasets as dset
 import torch.backends.cudnn as cudnn
 import scipy.io as sio
 from torch.autograd import Variable
+from skimage.restoration import denoise_tv_chambolle
+import numpy as np
+from sklearn.decomposition import PCA
+from skimage.restoration import denoise_tv_chambolle
+import scipy.io as sio
+import torch
+import pywt
 
 # imports from other files
 from model_search import Network
@@ -30,7 +38,7 @@ parser.add_argument('--learning_rate', type=float, default=0.0025, help='init le
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
 parser.add_argument('--weight_decay', type=float, default=3e-4, help='weight decay')
 parser.add_argument('--gpu', type=int, default=0, help='gpu device id')
-parser.add_argument('--epochs', type=int, default=50, help='num of training epochs') # number of epochs
+parser.add_argument('--epochs', type=int, default=100, help='num of training epochs') # number of epochs
 parser.add_argument('--init_channels', type=int, default=16, help='num of init channels')
 parser.add_argument('--layers', type=int, default=2, help='total number of layers')
 parser.add_argument('--unrolled', action='store_true', default=True, help='use one-step unrolled validation loss')
@@ -61,17 +69,76 @@ image_file = '/content/Indian_pines_corrected.mat'
 label_file = '/content/Indian_pines_gt.mat'
 
 image = sio.loadmat(image_file)
-IndianPines = image['indian_pines_corrected']
+Indianpines = image['indian_pines_corrected']
 
 label = sio.loadmat(label_file)
 GroundTruth = label['indian_pines_gt']
 
-IndianPines = (IndianPines - np.min(IndianPines)) / (np.max(IndianPines) - np.min(IndianPines))
+Indianpines = (Indianpines - np.min(Indianpines)) / (np.max(Indianpines) - np.min(Indianpines))
 
 ## data shape
-print("data shape: ",IndianPines.shape)
+print("data shape: ",Indianpines.shape)
 
-[nRow, nColumn, nBand] = IndianPines.shape
+data = Indianpines
+
+# Apply wavelet decomposition of level 4
+
+data_wav = np.empty_like(data)
+for i in range(data.shape[2]):
+    cA, (cH, cV, cD) = pywt.dwt2(data[:,:,i], 'db4')
+    cA_resized = F.interpolate(torch.from_numpy(cA)[None,None,:,:], size=(512,217), mode='bilinear', align_corners=False)
+    data_wav[:,:,i] = cA_resized.numpy()[0,0,:,:]
+
+print("after wavelet decomposition level 1:",data_wav.shape)
+
+data_wav1 = np.empty_like(data_wav)
+for i in range(data_wav1.shape[2]):
+    cA1, (cH1, cV1, cD1) = pywt.dwt2(data_wav1[:,:,i], 'db4')
+    cA_resized1 = F.interpolate(torch.from_numpy(cA1)[None,None,:,:], size=(512,217), mode='bilinear', align_corners=False)
+    data_wav1[:,:,i] = cA_resized1.numpy()[0,0,:,:]
+
+print("after wavelet decomposition level 2:",data_wav1.shape)
+
+data_wav2 = np.empty_like(data_wav1)
+for i in range(data_wav1.shape[2]):
+    cA2, (cH2, cV2, cD2) = pywt.dwt2(data_wav1[:,:,i], 'db4')
+    cA_resized2 = F.interpolate(torch.from_numpy(cA2)[None,None,:,:], size=(512,217), mode='bilinear', align_corners=False)
+    data_wav2[:,:,i] = cA_resized2.numpy()[0,0,:,:]
+
+print("after wavelet decomposition level 3:",data_wav2.shape)
+
+data_wav3 = np.empty_like(data_wav2)
+for i in range(data_wav2.shape[2]):
+    cA3, (cH3, cV3, cD3) = pywt.dwt2(data_wav3[:,:,i], 'db4')
+    cA_resized3 = F.interpolate(torch.from_numpy(cA3)[None,None,:,:], size=(512,217), mode='bilinear', align_corners=False)
+    data_wav3[:,:,i] = cA_resized3.numpy()[0,0,:,:]
+
+print("after wavelet decomposition level 4:",data_wav3.shape)
+
+
+
+indian_pines_data = data_wav3
+
+# Apply PCA for dimensionality reduction
+num_components = 204
+pca = PCA(n_components=num_components, whiten=True)
+indian_pines_data_pca = pca.fit_transform(indian_pines_data.reshape(-1, indian_pines_data.shape[-1]))
+indian_pines_data_pca = indian_pines_data_pca.reshape(indian_pines_data.shape[:-1] + (num_components,))
+
+print("after PCA",indian_pines_data_pca.shape)
+
+# Apply 3D-Hyperspectral Total Variation denoising
+lambda_tv = 0.1  # regularization parameter
+indian_pines_data_denoised = np.zeros_like(indian_pines_data_pca)
+for i in range(num_components):
+    indian_pines_data_denoised[..., i] = denoise_tv_chambolle(indian_pines_data_pca[..., i], weight=lambda_tv, multichannel=False)
+indian_pines_data_denoised = torch.from_numpy(indian_pines_data_denoised).float()
+
+# Print the shape of the denoised data
+print("after 3dtv",indian_pines_data_denoised.shape)
+
+
+[nRow, nColumn, nBand] = indian_pines_data_denoised.shape
 
 
 nTrain = args.Train
@@ -122,6 +189,8 @@ def main(seed, cut):
   architect = Architect(model, args)
 
   min_valid_loss = 100
+  lr_max = 0.0025
+  lr_min = 0.0010
 
   genotype = model.genotype()
   logging.info('genotype = %s', genotype)
@@ -134,7 +203,7 @@ def main(seed, cut):
 
     for iSample in range(nTrain):
 
-        yy = IndianPines[Row[RandPerm[iSample]] - HalfWidth: Row[RandPerm[iSample]] + HalfWidth, \
+        yy = Indianpines[Row[RandPerm[iSample]] - HalfWidth: Row[RandPerm[iSample]] + HalfWidth, \
              Column[RandPerm[iSample]] - HalfWidth: Column[RandPerm[iSample]] + HalfWidth, :]
         if args.cutout:
             xx = cutout(yy, args.cutout_length, args.num_cut)
@@ -146,7 +215,7 @@ def main(seed, cut):
         imdb['Labels'][iSample] = G[Row[RandPerm[iSample]], Column[RandPerm[iSample]]].astype(np.int64)
 
     for iSample in range(nValid):
-        imdb['data'][:, :, :, iSample + nTrain] = IndianPines[Row[RandPerm[iSample + nTrain]] - HalfWidth: Row[RandPerm[
+        imdb['data'][:, :, :, iSample + nTrain] = Indianpines[Row[RandPerm[iSample + nTrain]] - HalfWidth: Row[RandPerm[
               iSample + nTrain]] + HalfWidth, \
                                                     Column[RandPerm[iSample + nTrain]] - HalfWidth: Column[RandPerm[
                                                         iSample + nTrain]] + HalfWidth, :]
@@ -213,9 +282,12 @@ def main(seed, cut):
     #                                           shuffle=True, pin_memory=True, num_workers=0)
 
     tic = time.time()
-    scheduler.step()
-    lr = scheduler.get_lr()[0]
-
+    # scheduler.step()
+    # lr = scheduler.get_lr()[0]
+    lr = lr_min + 0.5 * (lr_max - lr_min) * (1 + math.cos(epoch / args.epochs * math.pi))
+    # Set the learning rate for the optimizer
+    optimizer.param_groups[0]['lr'] = lr
+    print("learning rate:",lr)
     # training
     train_acc, train_obj, tar, pre = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr)
 
