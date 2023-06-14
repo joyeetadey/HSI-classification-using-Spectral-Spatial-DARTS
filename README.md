@@ -27,10 +27,10 @@ This repository contains code for hyperspectral image (HSI) classification using
    !python test_HSI.py
 
 This repo contains implementations for four Hyperspectral Image Datasets namely:
-- Indian Pines
-- Salinas Valley
-- Kennedy Space Centre
-- Botswana
+- [Indian Pines](http://www.ehu.es/ccwintco/uploads/6/67/Indian_pines_corrected.mat)
+- [Salinas Valley](http://www.ehu.es/ccwintco/uploads/c/c4/Salinas_corrected.mat)
+- [Kennedy Space Centre](http://www.ehu.es/ccwintco/uploads/2/26/KSC.mat)
+- [Botswana](http://www.ehu.es/ccwintco/uploads/7/72/Botswana.mat)
 
 
 ### License
